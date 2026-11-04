@@ -1,0 +1,16 @@
+{
+  "name": "flashdrop",
+  "version": "1.0.0",
+  "description": "A minimal flash-sale order processing system",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node tests/flashdrop.test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "uuid": "^10.0.0"
+  }
+}
+
