@@ -142,6 +142,7 @@ router.post("/", async (req, res) => {
   setIdempotencyKey(idempotencyKey, orderId);
 
   // ── 10. Push onto the background processing queue ─────────────────────────
+  // Note: `simulateFailure` is strictly a test/demo hook to exercise error recovery and the FAILED state transition.
   enqueue({
     orderId,
     productId,

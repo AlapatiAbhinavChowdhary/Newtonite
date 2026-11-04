@@ -65,53 +65,62 @@ async function processOrder(job) {
 // ---------------------------------------------------------------------------
 
 let pollTimer = null;
+let isProcessing = false; // Concurrency guard: prevents overlapping ticks when processing delay > poll interval
 
 /**
  * One tick of the worker loop.
  * Dequeues a single job, guards against duplicates, processes it, and
- * updates the order status.
+ * updates the order status. Ensures single-job concurrency per worker instance.
  */
 async function tick() {
+  if (isProcessing) return; // Prevent overlapping ticks while an async job is already in flight
+
   const job = dequeue();
 
   // Nothing in the queue — wait for the next tick.
   if (!job) return;
 
-  const { orderId } = job;
+  isProcessing = true;
 
-  // ── Duplicate / stale-job guard ──────────────────────────────────────────
-  // Only process orders that are still PENDING.  If the order doesn't exist
-  // or has already moved past PENDING (e.g. a retry of the same job), skip.
-  const order = getOrder(orderId);
-
-  if (!order) {
-    console.warn(`[Worker] Order ${orderId} not found — skipping.`);
-    return;
-  }
-
-  if (order.status !== "PENDING") {
-    console.warn(
-      `[Worker] Order ${orderId} is already "${order.status}" — skipping duplicate job.`
-    );
-    return;
-  }
-
-  // ── Process the order ────────────────────────────────────────────────────
   try {
-    if (process.env.NODE_ENV !== "test") {
-      console.log(`[Worker] Processing order ${orderId} …`);
-    }
-    await processOrder(job);
+    const { orderId } = job;
 
-    updateOrderStatus(orderId, "CONFIRMED");
-    if (process.env.NODE_ENV !== "test") {
-      console.log(`[Worker] ✅ Order ${orderId} → CONFIRMED`);
+    // ── Duplicate / stale-job guard ──────────────────────────────────────────
+    // Only process orders that are still PENDING.  If the order doesn't exist
+    // or has already moved past PENDING (e.g. a retry of the same job), skip.
+    const order = getOrder(orderId);
+
+    if (!order) {
+      console.warn(`[Worker] Order ${orderId} not found — skipping.`);
+      return;
     }
-  } catch (err) {
-    updateOrderStatus(orderId, "FAILED");
-    if (process.env.NODE_ENV !== "test") {
-      console.error(`[Worker] ❌ Order ${orderId} → FAILED — ${err.message}`);
+
+    if (order.status !== "PENDING") {
+      console.warn(
+        `[Worker] Order ${orderId} is already "${order.status}" — skipping duplicate job.`
+      );
+      return;
     }
+
+    // ── Process the order ────────────────────────────────────────────────────
+    try {
+      if (process.env.NODE_ENV !== "test") {
+        console.log(`[Worker] Processing order ${orderId} …`);
+      }
+      await processOrder(job);
+
+      updateOrderStatus(orderId, "CONFIRMED");
+      if (process.env.NODE_ENV !== "test") {
+        console.log(`[Worker] ✅ Order ${orderId} → CONFIRMED`);
+      }
+    } catch (err) {
+      updateOrderStatus(orderId, "FAILED");
+      if (process.env.NODE_ENV !== "test") {
+        console.error(`[Worker] ❌ Order ${orderId} → FAILED — ${err.message}`);
+      }
+    }
+  } finally {
+    isProcessing = false;
   }
 }
 
@@ -141,6 +150,7 @@ function stop() {
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
+    isProcessing = false;
     console.log("[Worker] Stopped.");
   }
 }

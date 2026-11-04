@@ -343,3 +343,65 @@ flowchart LR
      - ALB HTTP 5xx rate > 1%.
      - Kafka Consumer Group lag > 500 messages (triggers worker task auto-scaling).
      - RDS storage space < 20% and CPU utilization > 80%.
+
+---
+
+## Section E: Component Responsibilities & Technical Reference
+
+| Component | Responsibility in Prototype | Responsibility in Production Target |
+|---|---|---|
+| **Express Router** | Validates schema, routes requests, checks idempotency map | Validates schema, delegates auth to ALB, checks Redis cache |
+| **Inventory Manager** | Single-tick synchronous check and deduction in RAM | Atomic conditional SQL update (`UPDATE ... WHERE available >= $1`) |
+| **Idempotency Store** | In-memory key-to-orderId map | Redis TTL cache + PostgreSQL unique constraint on `idempotency_key` |
+| **Order Queue** | In-memory FIFO JavaScript array | Partitioned Apache Kafka topic (`orders.v1`) on Amazon MSK |
+| **Order Worker** | Single-flight setInterval polling loop | Kafka Consumer Group instances with manual offset commitment |
+| **Error Middleware** | Catches exceptions, returns structured JSON errors | Global middleware + Sentry / CloudWatch structured error logging |
+
+### Production PostgreSQL DDL Schema
+
+```sql
+-- Authoritative Inventory & Order Schema
+CREATE TABLE products (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    price NUMERIC(10, 2) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE inventory (
+    product_id VARCHAR(64) PRIMARY KEY REFERENCES products(id),
+    available INTEGER NOT NULL CHECK (available >= 0),
+    reserved INTEGER NOT NULL DEFAULT 0 CHECK (reserved >= 0),
+    version INTEGER NOT NULL DEFAULT 1,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TYPE order_status AS ENUM ('PENDING', 'CONFIRMED', 'FAILED');
+
+CREATE TABLE orders (
+    id UUID PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    product_id VARCHAR(64) NOT NULL REFERENCES products(id),
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    status order_status NOT NULL DEFAULT 'PENDING',
+    idempotency_key VARCHAR(128) NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ
+);
+
+CREATE TABLE outbox_events (
+    id UUID PRIMARY KEY,
+    aggregate_type VARCHAR(64) NOT NULL,
+    aggregate_id VARCHAR(64) NOT NULL,
+    event_type VARCHAR(64) NOT NULL,
+    payload JSONB NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE processed_events (
+    event_id VARCHAR(128) PRIMARY KEY,
+    consumer_group VARCHAR(64) NOT NULL,
+    processed_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
